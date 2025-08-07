@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "334482962830",
+    "project_id": "bensnexus-4933d",
+    "storage_bucket": "bensnexus-4933d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:334482962830:android:bbde1d21d5964bc6e54cdf",
+        "android_client_info": {
+          "package_name": "com.example.bensnexus"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCwLyOYXpYsioRj2mTgZDIVVfJXjyGS2b8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
