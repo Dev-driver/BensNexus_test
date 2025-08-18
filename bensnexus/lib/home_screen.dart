@@ -1,15 +1,19 @@
 import 'dart:io';
 import 'dart:async';
 
+import 'package:bensnexus/commun/authentification/screen/auth_screen.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 
 class _StatusInfo {
   const _StatusInfo({required this.label, required this.icon, required this.color});
@@ -44,10 +48,15 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _idLigneTransport;
 
   final List<_StatusInfo> _statuses = const [
-    _StatusInfo(label: 'Chargé', icon: Icons.check, color: Colors.red),
+    _StatusInfo(label: 'En Chargement', icon: Icons.unarchive_outlined, color: Colors.red),
     _StatusInfo(label: 'En route', icon: Icons.local_shipping, color: Colors.orange),
     _StatusInfo(label: 'Arrivé sur site', icon: Icons.location_on, color: Colors.blue),
-    _StatusInfo(label: 'Déchargement terminé', icon: Icons.archive, color: Colors.green),
+    _StatusInfo(label: 'Déchargement terminé', icon: Icons.archive_outlined, color: Colors.green),
+  ];
+
+  final List<_StatusInfo> _returnStatuses = const [
+    _StatusInfo(label: 'En retour', icon: Icons.u_turn_left, color: Colors.purple),
+    _StatusInfo(label: 'Arrivé en restitution', icon: Icons.local_parking, color: Colors.teal),
   ];
 
   Stream<QuerySnapshot>? _operationStream;
@@ -59,7 +68,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = _auth.currentUser;
     if (user?.phoneNumber?.isNotEmpty == true) {
       _operationStream = _firestore
-          .collection('DB_DEV_OPERATIONS')
+          .collection('ops_ligne_transport')
           .where('Driver_Phone', isEqualTo: user!.phoneNumber)
           .limit(1)
           .snapshots();
@@ -71,6 +80,15 @@ class _HomeScreenState extends State<HomeScreen> {
     _positionStreamSubscription?.cancel();
     _audioRecorder.dispose();
     super.dispose();
+  }
+
+  // Helper pour gérer l'upload sur mobile et web
+  Future<void> _uploadFileToStorage(Reference ref, XFile file) async {
+    if (kIsWeb) {
+      await ref.putData(await file.readAsBytes(), SettableMetadata(contentType: file.mimeType));
+    } else {
+      await ref.putFile(File(file.path));
+    }
   }
 
   Future<void> _pickAndUploadImage() async {
@@ -100,10 +118,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final ref = _storage.ref('profile/$phoneNumber');
-      await ref.putFile(File(image.path));
+      await _uploadFileToStorage(ref, image);
       final imageUrl = await ref.getDownloadURL();
 
-      await _firestore.collection('DB_DEV_OPERATIONS').doc(_operationDocId).set(
+      await _firestore.collection('ops_ligne_transport').doc(_operationDocId).set(
         {'image_driver': imageUrl},
         SetOptions(merge: true),
       );
@@ -124,8 +142,16 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _updateDriverStatus(String newStatus) async {
     final user = _auth.currentUser;
     if (user == null || _operationDocId == null) return;
-    await _firestore.collection('DB_DEV_OPERATIONS').doc(_operationDocId).set(
+    await _firestore.collection('ops_ligne_transport').doc(_operationDocId).set(
       {'statut_driver': newStatus},
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> _updateReturnStatus(String newStatus) async {
+    if (_operationDocId == null) return;
+    await _firestore.collection('ops_ligne_transport').doc(_operationDocId).set(
+      {'statut_retour': newStatus},
       SetOptions(merge: true),
     );
   }
@@ -141,52 +167,191 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
-    if (image == null) return; // L'utilisateur a annulé la sélection
+    // Demander à l'utilisateur s'il souhaite télécharger un justificatif
+    final bool? wantsToUpload = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Row(children: [
+          Icon(Icons.file_upload_outlined),
+          SizedBox(width: 10),
+          Text('Justificatif')
+        ]),
+        content: const Text('Voulez-vous ajouter un ou plusieurs justificatifs ?'),
+        actions: <Widget>[
+          TextButton.icon(
+            icon: const Icon(Icons.close),
+            label: const Text('Non'),
+            onPressed: () => Navigator.of(context).pop(false), // "Non"
+            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.check_circle_outline),
+            label: const Text('Oui'),
+            onPressed: () => Navigator.of(context).pop(true), // "Oui"
+          ),
+        ],
+      ),
+    );
+
+    if (wantsToUpload == null) return; // L'utilisateur a fermé la boîte de dialogue
+
+    if (wantsToUpload == false) {
+      // Si non, mettre à jour uniquement le statut
+      await _updateDriverStatus(newStatus);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Statut mis à jour vers "$newStatus".')));
+      }
+      return;
+    }
+
+    // Si oui, permettre la sélection de plusieurs images
+    final List<XFile> images = await _picker.pickMultiImage();
+    if (images.isEmpty) {
+      // L'utilisateur a choisi d'uploader mais a annulé la sélection
+      await _updateDriverStatus(newStatus);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Statut mis à jour vers "$newStatus". Aucun justificatif ajouté.')),
+        );
+      }
+      return;
+    }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Téléchargement du justificatif...")),
+        SnackBar(content: Text("Téléchargement de ${images.length} justificatif(s)...")),
       );
     }
 
     try {
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final ref = _storage.ref('justificatif/$_operationDocId/${firestoreFieldName}_$timestamp.jpg');
-      await ref.putFile(File(image.path));
-      final imageUrl = await ref.getDownloadURL();
+      List<String> imageUrls = [];
+      for (var i = 0; i < images.length; i++) {
+        final image = images[i];
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        final ref = _storage.ref('justificatif/$_operationDocId/${firestoreFieldName}_${timestamp}_$i.jpg');
+        await _uploadFileToStorage(ref, image);
+        final imageUrl = await ref.getDownloadURL();
+        imageUrls.add(imageUrl);
+      }
 
-      final operationRef = _firestore.collection('DB_DEV_OPERATIONS').doc(_operationDocId);
+      final operationRef = _firestore.collection('ops_ligne_transport').doc(_operationDocId);
 
+      // Utiliser FieldValue.arrayUnion pour ajouter les URLs à un tableau dans Firestore
       await operationRef.set(
         {
-          firestoreFieldName: imageUrl,
+          firestoreFieldName: FieldValue.arrayUnion(imageUrls),
           'statut_driver': newStatus,
         },
         SetOptions(merge: true),
       );
 
-      // Si le déchargement est terminé, on archive l'opération et on la supprime.
-      if (newStatus == 'Déchargement terminé') {
-        final docSnapshot = await operationRef.get();
-        if (docSnapshot.exists) {
-          final dataToMove = docSnapshot.data()!;
-          dataToMove['date_livraison'] = FieldValue.serverTimestamp(); // Ajoute une date de fin
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Statut mis à jour vers "$newStatus" avec ${images.length} justificatif(s).')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Erreur lors de l'envoi du justificatif: $e")),
+        );
+      }
+    }
+  }
 
-          // Copie dans la collection d'archives
-          await _firestore.collection('ops_ligne_transport_livree').doc(_operationDocId).set(dataToMove);
-          
-          // Supprime de la collection active
-          await operationRef.delete();
+  Future<void> _pickAndUploadRestitution(String firestoreFieldName, String newStatus) async {
+    final user = _auth.currentUser;
+    if (user == null || _operationDocId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Erreur : Utilisateur ou opération non identifié.")),
+        );
+      }
+      return;
+    }
 
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Opération terminée et archivée.')),
-            );
-          }
-        }
-      } else if (mounted) {
+    // Demander à l'utilisateur s'il souhaite télécharger un justificatif
+    final bool? wantsToUpload = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Row(children: [
+          Icon(Icons.file_upload_outlined),
+          SizedBox(width: 10),
+          Text('Justificatif')
+        ]),
+        content: const Text('Voulez-vous ajouter un ou plusieurs justificatifs ?'),
+        actions: <Widget>[
+          TextButton.icon(
+            icon: const Icon(Icons.close),
+            label: const Text('Non'),
+            onPressed: () => Navigator.of(context).pop(false), // "Non"
+            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.check_circle_outline),
+            label: const Text('Oui'),
+            onPressed: () => Navigator.of(context).pop(true), // "Oui"
+          ),
+        ],
+      ),
+    );
+
+    if (wantsToUpload == null) return; // L'utilisateur a fermé la boîte de dialogue
+
+    if (wantsToUpload == false) {
+      // Si non, mettre à jour uniquement le statut
+      await _updateReturnStatus(newStatus);
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Statut mis à jour vers "$newStatus".')));
+      }
+      return;
+    }
+
+    // Si oui, permettre la sélection de plusieurs images
+    final List<XFile> images = await _picker.pickMultiImage();
+    if (images.isEmpty) {
+      // L'utilisateur a choisi d'uploader mais a annulé la sélection
+      await _updateReturnStatus(newStatus);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Statut mis à jour vers "$newStatus". Aucun justificatif ajouté.')),
+        );
+      }
+      return;
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Téléchargement de ${images.length} justificatif(s)...")),
+      );
+    }
+
+    try {
+      List<String> imageUrls = [];
+      for (var i = 0; i < images.length; i++) {
+        final image = images[i];
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        final ref = _storage.ref('justificatif/$_operationDocId/${firestoreFieldName}_${timestamp}_$i.jpg');
+        await _uploadFileToStorage(ref, image);
+        final imageUrl = await ref.getDownloadURL();
+        imageUrls.add(imageUrl);
+      }
+
+      final operationRef = _firestore.collection('ops_ligne_transport').doc(_operationDocId);
+
+      // Utiliser FieldValue.arrayUnion pour ajouter les URLs à un tableau dans Firestore
+      await operationRef.set(
+        {
+          firestoreFieldName: FieldValue.arrayUnion(imageUrls),
+          'statut_retour': newStatus,
+        },
+        SetOptions(merge: true),
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Statut mis à jour vers "$newStatus" avec ${images.length} justificatif(s).')),
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -223,7 +388,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final fileName = '${timestamp}_${image.name}';
         final ref = _storage.ref('justificatif/$fileName');
 
-        await ref.putFile(File(image.path));
+        await _uploadFileToStorage(ref, image);
         final imageUrl = await ref.getDownloadURL();
 
         await _firestore.collection('docs_upload').add({
@@ -265,8 +430,11 @@ class _HomeScreenState extends State<HomeScreen> {
         if (await _audioRecorder.hasPermission()) {
           // Capturer la position au début de l'enregistrement pour plus de précision
           _notePosition = await Geolocator.getCurrentPosition();
-          final dir = await getApplicationDocumentsDirectory();
-          final path = '${dir.path}/note_vocale_${DateTime.now().millisecondsSinceEpoch}.m4a';
+          
+          // path_provider n'est pas supporté sur le web, on laisse le package gérer le chemin.
+          final path = kIsWeb 
+              ? '' 
+              : '${(await getApplicationDocumentsDirectory()).path}/note_vocale_${DateTime.now().millisecondsSinceEpoch}.m4a';
 
           await _audioRecorder.start(const RecordConfig(), path: path);
 
@@ -306,14 +474,20 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
-      final file = File(path);
-      if (!await file.exists()) return;
-
-      final fileName = file.path.split('/').last;
+      final fileName = kIsWeb ? 'note_${DateTime.now().millisecondsSinceEpoch}.m4a' : path.split('/').last;
 
       // 1. Stocker l'audio dans le dossier 'audio/' de Storage
       final ref = _storage.ref('audio_incident/$fileName');
-      await ref.putFile(file);
+      
+      if (kIsWeb) {
+        final response = await http.get(Uri.parse(path));
+        await ref.putData(response.bodyBytes, SettableMetadata(contentType: 'audio/m4a'));
+      } else {
+        final file = File(path);
+        if (!await file.exists()) return;
+        await ref.putFile(file);
+      }
+
       final audioUrl = await ref.getDownloadURL();
 
       // 2. Enregistrer les informations dans la collection 'incidents_ops'
@@ -349,34 +523,60 @@ class _HomeScreenState extends State<HomeScreen> {
     serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Les services de localisation sont désactivés.')),
-        );
+        await _showExitDialog('Service de localisation désactivé',
+            'Veuillez activer la géolocalisation pour utiliser l\'application.');
       }
-      return;
+      return; // L'application se fermera via le dialogue.
     }
 
     permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Permission de localisation refusée.')),
-          );
-        }
-        return;
+        // L'utilisateur a explicitement refusé la permission.
+        await _showExitDialog('Permission de localisation refusée',
+            'Cette permission est obligatoire pour le fonctionnement de l\'application.');
+        return; // L'application se fermera via le dialogue.
       }
     }
 
     if (permission == LocationPermission.deniedForever) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Permission de localisation refusée de manière permanente. Veuillez l\'activer dans les paramètres.')),
+        // L'utilisateur a refusé la permission de manière permanente.
+        // On le guide vers les paramètres.
+        await showDialog(
+          context: context,
+          barrierDismissible: false, // L'utilisateur doit faire un choix
+          builder: (BuildContext context) => AlertDialog(
+            title: const Text('Permission de localisation requise'),
+            content: const Text(
+                'La permission de localisation a été refusée de manière permanente. Veuillez l\'activer dans les paramètres pour utiliser l\'application.'),
+            actions: <Widget>[
+              TextButton(
+                child: const Text('Quitter'),
+                onPressed: () {                  
+                  Navigator.of(context).pop(); // Ferme juste la boite de dialogue
+                  // Sur le web, on ne peut pas fermer l'onglet, donc on ne fait rien de plus.
+                  if (!kIsWeb) {
+                    if (Platform.isAndroid) {
+                      SystemNavigator.pop();
+                    } else if (Platform.isIOS) {
+                      // ATTENTION: exit(0) est fortement déconseillé par Apple et
+                      // peut mener au rejet de l'application sur l'App Store.
+                      exit(0); // À utiliser avec prudence.
+                    }
+                  }
+                },
+              ),
+              TextButton(
+                child: const Text('Ouvrir les paramètres'),
+                onPressed: () => openAppSettings(),
+              ),
+            ],
+          ),
         );
-        openAppSettings();
       }
-      return;
+      return; // Bloque l'exécution jusqu'à ce que l'utilisateur agisse.
     }
 
     // Les permissions sont accordées, on peut continuer.
@@ -389,6 +589,37 @@ class _HomeScreenState extends State<HomeScreen> {
       (Position position) => _sendGeolocation(position),
       onError: (e) {
         debugPrint('Erreur de géolocalisation: $e');
+      },
+    );
+  }
+
+  Future<void> _showExitDialog(String title, String content) async {
+    if (!mounted) return;
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false, // L'utilisateur doit interagir avec le dialogue.
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text(title),
+          content: Text(content),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Quitter'),
+              onPressed: () {
+                Navigator.of(context).pop(); // Ferme le dialogue
+                if (!kIsWeb) {
+                  if (Platform.isAndroid) {
+                    SystemNavigator.pop();
+                  } else if (Platform.isIOS) {
+                    // ATTENTION: exit(0) est fortement déconseillé par Apple et
+                    // peut mener au rejet de l'application sur l'App Store.
+                    exit(0);
+                  }
+                }
+              },
+            ),
+          ],
+        );
       },
     );
   }
@@ -424,7 +655,25 @@ class _HomeScreenState extends State<HomeScreen> {
             return Center(child: Text('Erreur : ${snapshot.error}'));
           }
           if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            return const Center(child: Text('Aucune opération trouvée.'));
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text('Aucune opération trouvée.', style: TextStyle(fontSize: 18)),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.logout),
+                    label: const Text('Se déconnecter'),
+                    onPressed: () async => await _auth.signOut(),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color.fromARGB(255, 169, 5, 5),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+                    ),
+                  ),
+                ],
+              ),
+            );
           }
 
           final doc = snapshot.data!.docs.first;
@@ -460,10 +709,13 @@ class _HomeScreenState extends State<HomeScreen> {
     final String? profileImageUrl = data['image_driver'] as String?;
     final String driverTractorCode = _tracteur ?? 'N/A';
     final String currentStatus = data['statut_driver'] ?? '';
-    final String idLigne = data['ID_Ligne_Transport'] ?? 'non défini';
     final String lieuChargement = data['Lieu_Chargement'] ?? '?';
     final String lieuDechargement = data['Lieu_Dechargement'] ?? '?';
-    final String description = data['description'] ?? 'Pas de description.';
+
+    // Récupérer le type de trajet et vérifier si le déchargement est terminé
+    final String typeTrajet = data['Type_Trajet'] as String? ?? 'Allée';
+    final String refLigneTransport = _refLigneTransport ?? 'Référence non définie';
+    final bool isDechargementTermine = currentStatus == 'Déchargement terminé';
 
     return Column(
       children: [
@@ -474,14 +726,20 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               children: [
                 _buildTaskCard(
-                  idLigne: idLigne,
+                  refLigneTransport: refLigneTransport,
                   lieuChargement: lieuChargement,
                   lieuDechargement: lieuDechargement,
-                  description: description,
+                  typeTrajet: typeTrajet,
                 ),
                 _buildProgressLine(currentStatus), // This will now fill from Left to Right
                 const SizedBox(height: 12),
                 _buildStatusButtons(currentStatus),
+                if (typeTrajet == 'Allée_Retour' && isDechargementTermine)
+                  AnimatedSize(
+                    duration: const Duration(milliseconds: 500),
+                    curve: Curves.easeInOut,
+                    child: _buildReturnTripUI(data),
+                  ),
                 const SizedBox(height: 24),
                 _buildSecondaryActions(),
               ],
@@ -496,7 +754,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       padding: const EdgeInsets.only(bottom: 20),
       decoration: const BoxDecoration(
-        color: Color.fromARGB(255, 7, 46, 175),
+        color: Color.fromARGB(255, 169, 5, 5),
         borderRadius: BorderRadius.vertical(bottom: Radius.circular(30)),
       ),
       child: SafeArea(
@@ -534,12 +792,14 @@ class _HomeScreenState extends State<HomeScreen> {
                       // On arrête le suivi de la localisation avant de se déconnecter
                       await _positionStreamSubscription?.cancel();
                       _positionStreamSubscription = null;
-
-                      await _auth.signOut(); // AuthGate s'occupera de la redirection
-                      if (mounted) {
-                        // On redirige vers l'écran d'authentification et on supprime l'historique de navigation.
-                        Navigator.of(context).pushNamedAndRemoveUntil('/auth', (Route<dynamic> route) => false);
-                      }
+                      await _auth.signOut();
+                      if (!mounted) return;
+                      // Rediriger vers la page de connexion et supprimer l'historique de navigation
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute(
+                            builder: (context) => const AuthScreen()),
+                        (route) => false,
+                      );
                     },
                   ),
                 ],
@@ -554,7 +814,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: CircleAvatar(
                   radius: 42,
                   backgroundImage: (imageUrl != null && imageUrl.isNotEmpty) ? NetworkImage(imageUrl) : null,
-                  onBackgroundImageError: (imageUrl != null && imageUrl.isNotEmpty) ? (_, __) {} : null,
                   child: (imageUrl == null || imageUrl.isEmpty)
                       ? const Icon(Icons.camera_alt, size: 36, color: Colors.grey)
                       : null,
@@ -568,15 +827,15 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildTaskCard({
-    required String idLigne,
+    required String refLigneTransport,
     required String lieuChargement,
     required String lieuDechargement,
-    required String description,
+    required String typeTrajet,
   }) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color.fromARGB(255, 7, 46, 175),
+        color: const Color.fromARGB(255, 169, 5, 5),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
@@ -586,7 +845,7 @@ class _HomeScreenState extends State<HomeScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                idLigne,
+                refLigneTransport,
                 style: const TextStyle(
                   fontWeight: FontWeight.bold,
                   color: Colors.white,
@@ -602,20 +861,58 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            description,
+            typeTrajet,
             style: const TextStyle(color: Colors.white70, fontSize: 13),
           ),
           const SizedBox(height: 10),
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                lieuChargement,
-                style: const TextStyle(color: Colors.white, fontSize: 14),
+              // From
+              Expanded(
+                child: Row(
+                  children: [
+                    const Icon(Icons.arrow_circle_up_outlined, color: Colors.white, size: 22),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text("Chargement", style: TextStyle(color: Colors.white70, fontSize: 12)),
+                          Text(
+                            lieuChargement,
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              Text(
-                lieuDechargement,
-                style: const TextStyle(color: Colors.white, fontSize: 14),
+              const SizedBox(width: 10),
+              // To
+              Expanded(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          const Text("Déchargement", style: TextStyle(color: Colors.white70, fontSize: 12)),
+                          Text(
+                            lieuDechargement,
+                            textAlign: TextAlign.end,
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.arrow_circle_down_outlined, color: Colors.white, size: 22),
+                  ],
+                ),
               ),
             ],
           ),
@@ -645,7 +942,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   duration: const Duration(milliseconds: 400),
                   curve: Curves.easeInOut,
                   width: constraints.maxWidth * progress,
-                  color: const Color.fromARGB(255, 7, 46, 175),
+                  color: const Color.fromARGB(255, 169, 5, 5),
                 ),
               ],
             ),
@@ -663,6 +960,7 @@ class _HomeScreenState extends State<HomeScreen> {
       children: List.generate(_statuses.length, (index) {
         final statusInfo = _statuses[index];
         final isDone = index <= currentIndex;
+        // Le bouton est activé s'il s'agit de la prochaine étape.
         final isEnabled = index == currentIndex + 1;
         VoidCallback? onPressedAction;
 
@@ -692,11 +990,23 @@ class _HomeScreenState extends State<HomeScreen> {
                 disabledBackgroundColor: buttonColor, // Important pour que le bouton désactivé garde sa couleur
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
               ),
-              child: Icon(
-                statusInfo.icon,
-                size: 28,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    statusInfo.icon,
+                    size: 30,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    statusInfo.label,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
               ),
             ),
           ),
@@ -709,27 +1019,29 @@ class _HomeScreenState extends State<HomeScreen> {
     return Row(
       children: [
         Expanded(
-          child: OutlinedButton.icon(
+          child: ElevatedButton.icon(
             onPressed: _uploadDocumentImages,
-            icon: const Icon(Icons.folder_copy_outlined, color: Colors.red),
-            label: const Text('Documents', style: TextStyle(color: Color.fromARGB(255, 7, 46, 175))),
-            style: OutlinedButton.styleFrom(
-              side: const BorderSide(color: Colors.red),
+            icon: const Icon(Icons.folder_copy_outlined),
+            label: const Text('Documents'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color.fromARGB(255, 169, 5, 5),
+              foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(vertical: 12),
+              padding: const EdgeInsets.symmetric(vertical: 16),
             ),
           ),
         ),
         const SizedBox(width: 12),
         Expanded(
           child: OutlinedButton.icon(
-            onPressed: () {},
-            icon: const Icon(Icons.local_shipping, color: Colors.grey),
-            label: const Text('Driver', style: TextStyle(color: Colors.grey)),
+            onPressed: null,
+            icon: const Icon(Icons.info_outline),
+            label: const Text('Détails'),
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: Colors.grey),
+              disabledForegroundColor: Colors.grey,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(vertical: 12),
+              padding: const EdgeInsets.symmetric(vertical: 16),
             ),
           ),
         ),
@@ -755,6 +1067,119 @@ class _HomeScreenState extends State<HomeScreen> {
               color: Colors.white,
               size: 30,
             ),
+    );
+  }
+
+  Widget _buildReturnTripUI(Map<String, dynamic> data) {
+    final String returnStatus = data['statut_retour'] as String? ?? '';
+
+    return Column(
+      children: [
+        const SizedBox(height: 20),
+        const Divider(),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8.0),
+          child: Text(
+            "Trajet Retour",
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
+          ),
+        ),
+        _buildReturnProgressLine(returnStatus),
+        const SizedBox(height: 12),
+        _buildReturnStatusButtons(returnStatus),
+      ],
+    );
+  }
+
+  Widget _buildReturnProgressLine(String currentStatus) {
+    int index = _returnStatuses.indexWhere((s) => s.label == currentStatus);
+    double progress = (index + 1) / _returnStatuses.length;
+    progress = progress.clamp(0.0, 1.0);
+
+    return Container(
+      height: 8,
+      margin: const EdgeInsets.symmetric(vertical: 16),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Stack(
+              children: [
+                Container(color: Colors.grey.shade300),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 400),
+                    curve: Curves.easeInOut,
+                    width: constraints.maxWidth * progress,
+                    color: Colors.deepPurple,
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildReturnStatusButtons(String currentStatus) {
+    int currentIndex = _returnStatuses.indexWhere((s) => s.label == currentStatus);
+
+    final retourStatus = _returnStatuses[0];
+    final arriveStatus = _returnStatuses[1];
+
+    bool isRetourEnabled = currentIndex < 0;
+    bool isArriveEnabled = currentIndex == 0;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceAround,
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: ElevatedButton(
+              onPressed: isRetourEnabled ? () => _updateReturnStatus(retourStatus.label) : null,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: retourStatus.color,
+                disabledBackgroundColor: retourStatus.color.withOpacity(0.5),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              child: Column(
+                children: [
+                  Icon(retourStatus.icon, size: 30),
+                  const SizedBox(height: 8),
+                  const Text('En Retour'),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: ElevatedButton(
+              onPressed: isArriveEnabled ? () => _pickAndUploadRestitution('Upload_Restitution', arriveStatus.label) : null,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: arriveStatus.color,
+                disabledBackgroundColor: arriveStatus.color.withOpacity(0.5),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              child: Column(
+                children: [
+                  Icon(arriveStatus.icon, size: 30),
+                  const SizedBox(height: 8),
+                  const Text('Arrivé'),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

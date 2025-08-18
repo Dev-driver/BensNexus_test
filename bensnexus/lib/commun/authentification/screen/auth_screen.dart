@@ -1,8 +1,12 @@
 import 'package:bensnexus/commun/authentification/otp_screen.dart'; // Assurez-vous que ce chemin est correct
-import 'package:bensnexus/commun/generale/elementBensGroup.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'package:bensnexus/home_screen_admin.dart';
+import 'package:bensnexus/home_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -14,25 +18,40 @@ class AuthScreen extends StatefulWidget {
 class _AuthScreenState extends State<AuthScreen> {
   // Clés et Contrôleurs
   final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _contactController =
-      TextEditingController(); // Nouveau contrôleur unifié
+  final _contactController = TextEditingController();
+  final _passwordController = TextEditingController(); // Pour le mot de passe (email)
+  final _otpController = TextEditingController(); // Pour le code OTP
 
   // Logique de Firebase et état de l'UI
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  bool _isLogin = true;
   bool _isLoading = false;
   String? _errorMessage;
 
+  // Pour gérer les différents états d'authentification
+  bool _isEmailMode = false;
+  bool _isOtpSent = false;
+  String? _verificationId; // Pour mobile
+  ConfirmationResult? _confirmationResult; // Pour le web
+
   @override
   void dispose() {
-    _nameController.dispose();
     _contactController.dispose();
+    _passwordController.dispose();
+    _otpController.dispose();
     super.dispose();
   }
 
   /// Détermine si l'entrée est un email ou un téléphone et lance l'authentification.
   void _submitAuth() async {
+    // Si le code OTP a été envoyé, on vérifie le code entré.
+    if (_isOtpSent && !_isEmailMode) {
+      if (kIsWeb) {
+        _verifyOtpWeb();
+      }
+      // La vérification mobile se fait dans l'écran OTP, donc pas de logique ici.
+      return;
+    }
+
     // Valide les champs du formulaire
     if (!_formKey.currentState!.validate()) {
       return;
@@ -40,61 +59,48 @@ class _AuthScreenState extends State<AuthScreen> {
 
     final String contactInput = _contactController.text.trim();
 
-    // Vérifie si l'entrée contient '@' pour la considérer comme un email
-    if (contactInput.contains('@')) {
-      _handleEmailAuth(contactInput);
+    // Si on est en mode email (déterminé par l'input)
+    if (_isEmailMode) {
+      _handleEmailAuth(contactInput, _passwordController.text);
     }
     // Sinon, on suppose que c'est un numéro de téléphone
     else {
-      // On s'assure que le numéro commence par '+' pour Firebase
-      final String fullPhoneNumber =
-          contactInput.startsWith('+') ? contactInput : '+$contactInput';
-      _sendOtp(fullPhoneNumber);
+      // On formate le numéro pour l'authentification Firebase
+      String phoneNumber = contactInput.replaceAll(' ', ''); // Supprime les espaces
+
+      // Gère les cas où l'utilisateur entre ou non l'indicatif
+      if (phoneNumber.startsWith('+221')) {
+        // Numéro déjà correct.
+      } else if (phoneNumber.startsWith('221')) {
+        phoneNumber = '+$phoneNumber';
+      } else {
+        phoneNumber = '+221$phoneNumber';
+      }
+      _sendOtp(phoneNumber);
     }
   }
 
   /// Gère la logique pour l'authentification par email lors de la connexion
-  Future<void> _handleEmailAuth(String email) async {
+  Future<void> _handleEmailAuth(String email, String password) async {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     try {
-      // Recherche dans la collection client
-      final query = await FirebaseFirestore.instance
-          .collection('client')
-          .where('contact', isEqualTo: email)
-          .limit(1)
-          .get();
-
-      if (query.docs.isNotEmpty) {
-        // Email trouvé, ouvrir l'écran OTP
-        setState(() => _isLoading = false);
-        if (context.mounted) {
-          
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => OtpScreen(
-                verificationId: 'email',
-                phoneNumber: email,
-                resendToken: null,
-              ),
-            ),
-          );
-        }
-      } else {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = "Aucun compte trouvé avec cet email.";
-        });
+      final userCredential = await _auth.signInWithEmailAndPassword(email: email, password: password);
+      // L'authentification a réussi, on vérifie le rôle et on navigue.
+      await _onAuthSuccess(userCredential);
+    } on FirebaseAuthException catch (e) {
+      String errorMessage = "Une erreur d'authentification est survenue.";
+      if (e.code == 'user-not-found' || e.code == 'wrong-password' || e.code == 'invalid-credential') {
+        errorMessage = "L'email ou le mot de passe est incorrect.";
+      } else if (e.code == 'invalid-email') {
+        errorMessage = "Le format de l'email est invalide.";
       }
+      _handleError(errorMessage);
     } catch (e) {
-      setState(() {
-        _isLoading = false;
-        _errorMessage = "Erreur lors de la vérification : $e";
-      });
+      _handleError("Une erreur inattendue est survenue. Veuillez réessayer.");
     }
   }
 
@@ -105,15 +111,97 @@ class _AuthScreenState extends State<AuthScreen> {
       _errorMessage = null;
     });
 
-    await _auth.verifyPhoneNumber(
-      phoneNumber: phoneNumber,
-      verificationCompleted: (PhoneAuthCredential credential) async {
-        setState(() => _isLoading = false);
-        // La vérification est automatique, on connecte et on enregistre si besoin
-        final userCredential = await _auth.signInWithCredential(credential);
-        await _onAuthSuccess(userCredential);
-      },
-      verificationFailed: (FirebaseAuthException e) {
+    if (kIsWeb) {
+      try {
+        // Sur le web, on utilise reCAPTCHA. Assurez-vous d'avoir un div avec id='recaptcha-container' dans votre index.html
+        _confirmationResult = await _auth.signInWithPhoneNumber(phoneNumber);
+        setState(() {
+          _isLoading = false;
+          _isOtpSent = true; // Affiche le champ OTP
+        });
+      } on FirebaseAuthException catch (e) {
+        _handleError("Erreur reCAPTCHA : ${e.message}");
+      }
+    } else {
+      // Logique existante pour mobile
+      await _auth.verifyPhoneNumber(
+        phoneNumber: phoneNumber,
+        verificationCompleted: (PhoneAuthCredential credential) async {
+          setState(() => _isLoading = false);
+          // La vérification est automatique, on connecte et on enregistre si besoin
+          final userCredential = await _auth.signInWithCredential(credential);
+          await _onAuthSuccess(userCredential);
+        },
+        verificationFailed: (FirebaseAuthException e) {
+          _handleErrorFromException(e);
+        },
+        codeSent: (String verificationId, int? resendToken) {
+          // Sur mobile, on navigue vers un écran dédié pour l'OTP
+          _navigateToOtpScreen(verificationId, phoneNumber, resendToken);
+        },
+        codeAutoRetrievalTimeout: (String verificationId) {
+          // Géré si nécessaire
+        },
+      );
+    }
+  }
+
+  /// Gère la navigation vers l'écran OTP sur mobile.
+  void _navigateToOtpScreen(String verificationId, String phoneNumber, int? resendToken) async {
+    setState(() => _isLoading = false);
+    if (mounted) {
+      // Navigue vers l'écran OTP et attend le code en retour
+      final otpCode = await Navigator.push<String>(
+        context,
+        MaterialPageRoute(
+          builder: (context) => OtpScreen(
+            verificationId: verificationId,
+            phoneNumber: phoneNumber,
+            resendToken: resendToken,
+          ),
+        ),
+      );
+
+      // Si l'utilisateur a entré un code et est revenu
+      if (otpCode != null && otpCode.isNotEmpty) {
+        setState(() => _isLoading = true);
+        try {
+          PhoneAuthCredential credential = PhoneAuthProvider.credential(
+            verificationId: verificationId,
+            smsCode: otpCode,
+          );
+          final userCredential = await _auth.signInWithCredential(credential);
+          await _onAuthSuccess(userCredential);
+        } on FirebaseAuthException {
+          _handleError("Le code OTP est incorrect ou a expiré. Veuillez réessayer.");
+        } finally {
+          if (mounted) {
+            setState(() => _isLoading = false);
+          }
+        }
+      }
+    }
+  }
+
+  /// Gère la vérification du code OTP sur le web.
+  Future<void> _verifyOtpWeb() async {
+    if (_confirmationResult == null) {
+      _handleError("Erreur interne, veuillez recommencer.");
+      return;
+    }
+    setState(() => _isLoading = true);
+    try {
+      final userCredential = await _confirmationResult!.confirm(_otpController.text.trim());
+      await _onAuthSuccess(userCredential);
+    } on FirebaseAuthException catch (e) {
+      _handleError(e.code == 'invalid-verification-code'
+          ? "Le code OTP est incorrect. Veuillez réessayer."
+          : "Une erreur est survenue: ${e.message}");
+    }
+  }
+
+  /// Gère les erreurs de `verifyPhoneNumber`
+  void _handleErrorFromException(FirebaseAuthException e) {
         String errorMessage;
         switch (e.code) {
           case 'invalid-phone-number':
@@ -131,89 +219,53 @@ class _AuthScreenState extends State<AuthScreen> {
             errorMessage = "Impossible de vérifier ce numéro. Veuillez réessayer ou contacter le support.";
         }
         _handleError(errorMessage);
-      },
-      codeSent: (String verificationId, int? resendToken) async {
-        setState(() => _isLoading = false);
-        if (context.mounted) {
-          // Navigue vers l'écran OTP et attend le code en retour
-          final otpCode = await Navigator.push<String>(
-            context,
-            MaterialPageRoute(
-              builder: (context) => OtpScreen(
-                verificationId: verificationId,
-                phoneNumber: phoneNumber,
-                resendToken: resendToken,
-                // NOTE: Les paramètres 'driverName' et 'onVerified' ne sont plus nécessaires ici
-              ),
-            ),
-          );
-
-          // Si l'utilisateur a entré un code et est revenu
-          if (otpCode != null && otpCode.isNotEmpty) {
-            setState(() => _isLoading = true);
-            try {
-              PhoneAuthCredential credential = PhoneAuthProvider.credential(
-                verificationId: verificationId,
-                smsCode: otpCode,
-              );
-              final userCredential = await _auth.signInWithCredential(credential);
-              await _onAuthSuccess(userCredential);
-            } on FirebaseAuthException {
-              _handleError("Le code OTP est incorrect ou a expiré. Veuillez réessayer.");
-            } finally {
-              if (mounted) {
-                setState(() => _isLoading = false);
-              }
-            }
-          }
-        }
-      },
-      codeAutoRetrievalTimeout: (String verificationId) {},
-    );
   }
 
   /// Gère la logique après une authentification réussie (auto ou manuelle).
   /// C'est ici que l'enregistrement automatique est effectué.
   Future<void> _onAuthSuccess(UserCredential userCredential) async {
     final user = userCredential.user;
-    if (user == null) return;
- 
-    final driverCollection =
-        FirebaseFirestore.instance.collection('Comptes_Driver');
-    final docRef = driverCollection.doc(user.uid);
-    final docSnapshot = await docRef.get();
-    final bool accountExists = docSnapshot.exists;
- 
-    // Si l'utilisateur est sur l'onglet "Inscription"
-    if (!_isLogin) {
-      if (accountExists) {
-        // Le compte existe déjà, on informe l'utilisateur qu'on le connecte simplement.
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("Ce numéro est déjà enregistré. Connexion..."),
-              backgroundColor: Colors.blue,
-            ),
-          );
-          // On attend un peu pour que le message soit visible
-          await Future.delayed(const Duration(milliseconds: 800));
-        }
-      } else {
-        // Le compte n'existe pas, on le crée.
-        final driverName = _nameController.text.trim();
-        if (driverName.isNotEmpty) {
-          await docRef.set({
-            'nom': driverName,
-            'telephone': user.phoneNumber,
-            'uid': user.uid,
-            'date_creation': FieldValue.serverTimestamp(),
-          });
-        }
-      }
+    if (user == null) {
+      _handleError("Impossible de récupérer les informations de l'utilisateur.");
+      return;
     }
-    // Dans tous les cas (connexion ou inscription réussie), on navigue vers l'accueil.
-    if (mounted) {
-      Navigator.of(context).pushNamedAndRemoveUntil('/driver', (Route<dynamic> route) => false);
+
+    try {
+      String? userEmail = user.email;
+      bool isAdmin = false;
+
+      // Un utilisateur admin doit avoir un email pour être vérifié dans la collection.
+      if (userEmail != null && userEmail.isNotEmpty) {
+        final adminDoc = await FirebaseFirestore.instance
+            .collection('Compte_Admin')
+            .where('email', isEqualTo: userEmail)
+            .limit(1)
+            .get();
+
+        if (adminDoc.docs.isNotEmpty) {
+          isAdmin = true;
+        } else if (_isEmailMode) {
+          // Si l'utilisateur tente de se connecter par email mais n'est pas un admin,
+          // on le déconnecte et on affiche une erreur.
+          await _auth.signOut();
+          _handleError("Accès refusé. Seuls les administrateurs peuvent se connecter par email.");
+          return;
+        }
+      } else if (_isEmailMode) {
+        // Sécurité : si on est en mode email mais que l'utilisateur n'a pas d'email (ne devrait pas arriver)
+        await _auth.signOut();
+        _handleError("La connexion par email requiert une adresse email valide.");
+        return;
+      }
+
+      if (mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (context) => isAdmin ? const HomeScreenAdmin() : const HomeScreen()),
+          (Route<dynamic> route) => false,
+        );
+      }
+    } catch (e) {
+      _handleError("Erreur lors de la vérification des permissions. Veuillez réessayer.");
     }
   }
 
@@ -229,66 +281,54 @@ class _AuthScreenState extends State<AuthScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isLogin ? 'Connexion' : 'Inscription'),
+        title: const Text('Connexion'),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
-            // Assurez-vous que le logo est bien dans votre dossier assets/ et déclaré dans pubspec.yaml
-            Image.asset(logo, height: 100, width: 300),
-            const SizedBox(height: 40),
-            ToggleButtons(
-              isSelected: [_isLogin, !_isLogin],
-              onPressed: (int index) {
-                setState(() {
-                  _isLogin = index == 0;
-                  _errorMessage =
-                      null; // Réinitialise les erreurs au changement
-                });
-              },
-              borderRadius: BorderRadius.circular(30),
-              constraints: const BoxConstraints(minHeight: 50, minWidth: 150),
-              children: const [
-                Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 16),
-                    child: Text('Connexion')),
-                Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 16),
-                    child: Text('Inscription')),
-              ],
-            ),
-            const SizedBox(height: 30),
+            // Logo de l'application.
+            Image.asset('assetes/image/logo-transparent.png', height: 100, width: 300),
+            const SizedBox(height: 80),
             Form(
               key: _formKey,
               child: Column(
                 children: [
-                  if (!_isLogin)
-                    TextFormField(
-                      controller: _nameController,
-                      decoration: const InputDecoration(
-                        labelText: 'Nom complet',
-                        prefixIcon: Icon(Icons.person),
-                        border: OutlineInputBorder(),
-                      ),
-                      validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return 'Veuillez entrer votre nom';
-                        }
-                        return null;
-                      },
-                    ),
-                  if (!_isLogin) const SizedBox(height: 15),
-
                   // Champ unifié pour email ou téléphone
                   TextFormField(
                     controller: _contactController,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
-                      labelText: 'Email ou Numéro de téléphone',
-                      hintText: 'exemple@email.com ou +221771234567',
-                      prefixIcon: Icon(Icons.contact_mail_outlined),
-                      border: OutlineInputBorder(),
+                    onChanged: (value) {
+                      final bool isNowEmail = value.contains('@');
+                      if (isNowEmail != _isEmailMode) {
+                        _formKey.currentState?.reset();
+                        setState(() {
+                          _isEmailMode = isNowEmail;
+                          _errorMessage = null; // Réinitialise l'erreur au changement de mode
+                        });
+                      }
+                    },
+                    keyboardType: _isEmailMode ? TextInputType.emailAddress : TextInputType.phone,
+                    decoration: InputDecoration(
+                      labelText: _isEmailMode ? 'Email' : 'Numéro de téléphone',
+                      hintText: _isEmailMode ? 'admin@example.com' : '77 123 45 67',
+                      prefixIcon: _isEmailMode
+                          ? const Icon(Icons.email_outlined)
+                          : Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const SizedBox(width: 15), // Espace à gauche
+                                const Text('🇸🇳', style: TextStyle(fontSize: 24)),
+                                const SizedBox(width: 8),
+                                const Text('+221', style: TextStyle(fontSize: 16)),
+                                Container(
+                                  height: 24,
+                                  width: 1,
+                                  color: Colors.grey.shade400,
+                                  margin: const EdgeInsets.only(left: 8, right: 4),
+                                ),
+                              ],
+                            ),
+                      border: const OutlineInputBorder(),
                     ),
                     validator: (value) {
                       if (value == null || value.isEmpty) {
@@ -297,6 +337,45 @@ class _AuthScreenState extends State<AuthScreen> {
                       return null;
                     },
                   ),
+
+                  // Le champ de mot de passe s'affiche en mode email
+                  if (_isEmailMode) ...[
+                    const SizedBox(height: 15),
+                    TextFormField(
+                      controller: _passwordController,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Mot de passe',
+                        prefixIcon: Icon(Icons.lock),
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (value) {
+                        if (value == null || value.isEmpty) return 'Veuillez entrer votre mot de passe';
+                        return null;
+                      },
+                    ),
+                  ],
+
+                  // Le champ OTP s'affiche si on est en mode téléphone et que le code a été envoyé (sur le web)
+                  if (!_isEmailMode && _isOtpSent && kIsWeb) ...[
+                    const SizedBox(height: 15),
+                    TextFormField(
+                      controller: _otpController,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      decoration: const InputDecoration(
+                        labelText: 'Code de vérification (OTP)',
+                        prefixIcon: Icon(Icons.sms),
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (value) {
+                        if (value == null || value.isEmpty) return 'Veuillez entrer le code reçu';
+                        if (value.length != 6) return 'Le code doit contenir 6 chiffres';
+                        return null;
+                      },
+                    ),
+                  ],
+
                   const SizedBox(height: 30),
 
                   // Affichage de l'erreur
@@ -321,7 +400,9 @@ class _AuthScreenState extends State<AuthScreen> {
                     child: _isLoading
                         ? const CircularProgressIndicator(color: Colors.white)
                         : Text(
-                            _isLogin ? 'Se connecter' : 'Créer un compte',
+                            _isOtpSent && !_isEmailMode && kIsWeb
+                                ? 'Vérifier le code'
+                                : 'Se connecter',
                             style: const TextStyle(
                                 fontSize: 18, color: Colors.white),
                           ),
