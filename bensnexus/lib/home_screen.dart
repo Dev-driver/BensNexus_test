@@ -139,24 +139,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _updateDriverStatus(String newStatus) async {
-    final user = _auth.currentUser;
-    if (user == null || _operationDocId == null) return;
-    await _firestore.collection('ops_ligne_transport').doc(_operationDocId).set(
-      {'statut_driver': newStatus},
-      SetOptions(merge: true),
-    );
-  }
-
-  Future<void> _updateReturnStatus(String newStatus) async {
-    if (_operationDocId == null) return;
-    await _firestore.collection('ops_ligne_transport').doc(_operationDocId).set(
-      {'statut_retour': newStatus},
-      SetOptions(merge: true),
-    );
-  }
-
-  Future<void> _pickAndUploadJustificatif(String firestoreFieldName, String newStatus) async {
+  /// Gère la mise à jour d'un statut avec la possibilité d'ajouter des justificatifs.
+  Future<void> _updateStatusWithOptionalProof({
+    required String newStatus,
+    required String proofFieldName,
+    required String statusFieldName,
+  }) async {
     final user = _auth.currentUser;
     if (user == null || _operationDocId == null) {
       if (mounted) {
@@ -197,121 +185,23 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (wantsToUpload == false) {
       // Si non, mettre à jour uniquement le statut
-      await _updateDriverStatus(newStatus);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Statut mis à jour vers "$newStatus".')));
-      }
-      return;
-    }
-
-    // Si oui, permettre la sélection de plusieurs images
-    final List<XFile> images = await _picker.pickMultiImage();
-    if (images.isEmpty) {
-      // L'utilisateur a choisi d'uploader mais a annulé la sélection
-      await _updateDriverStatus(newStatus);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Statut mis à jour vers "$newStatus". Aucun justificatif ajouté.')),
-        );
-      }
-      return;
-    }
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Téléchargement de ${images.length} justificatif(s)...")),
-      );
-    }
-
-    try {
-      List<String> imageUrls = [];
-      for (var i = 0; i < images.length; i++) {
-        final image = images[i];
-        final timestamp = DateTime.now().millisecondsSinceEpoch;
-        final ref = _storage.ref('justificatif/$_operationDocId/${firestoreFieldName}_${timestamp}_$i.jpg');
-        await _uploadFileToStorage(ref, image);
-        final imageUrl = await ref.getDownloadURL();
-        imageUrls.add(imageUrl);
-      }
-
-      final operationRef = _firestore.collection('ops_ligne_transport').doc(_operationDocId);
-
-      // Utiliser FieldValue.arrayUnion pour ajouter les URLs à un tableau dans Firestore
-      await operationRef.set(
-        {
-          firestoreFieldName: FieldValue.arrayUnion(imageUrls),
-          'statut_driver': newStatus,
-        },
+      await _firestore.collection('ops_ligne_transport').doc(_operationDocId).set(
+        {statusFieldName: newStatus},
         SetOptions(merge: true),
       );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Statut mis à jour vers "$newStatus" avec ${images.length} justificatif(s).')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Erreur lors de l'envoi du justificatif: $e")),
-        );
-      }
-    }
-  }
-
-  Future<void> _pickAndUploadRestitution(String firestoreFieldName, String newStatus) async {
-    final user = _auth.currentUser;
-    if (user == null || _operationDocId == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Erreur : Utilisateur ou opération non identifié.")),
-        );
-      }
-      return;
-    }
-
-    // Demander à l'utilisateur s'il souhaite télécharger un justificatif
-    final bool? wantsToUpload = await showDialog<bool>(
-      context: context,
-      builder: (BuildContext context) => AlertDialog(
-        title: const Row(children: [
-          Icon(Icons.file_upload_outlined),
-          SizedBox(width: 10),
-          Text('Justificatif')
-        ]),
-        content: const Text('Voulez-vous ajouter un ou plusieurs justificatifs ?'),
-        actions: <Widget>[
-          TextButton.icon(
-            icon: const Icon(Icons.close),
-            label: const Text('Non'),
-            onPressed: () => Navigator.of(context).pop(false), // "Non"
-            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
-          ),
-          ElevatedButton.icon(
-            icon: const Icon(Icons.check_circle_outline),
-            label: const Text('Oui'),
-            onPressed: () => Navigator.of(context).pop(true), // "Oui"
-          ),
-        ],
-      ),
-    );
-
-    if (wantsToUpload == null) return; // L'utilisateur a fermé la boîte de dialogue
-
-    if (wantsToUpload == false) {
-      // Si non, mettre à jour uniquement le statut
-      await _updateReturnStatus(newStatus);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Statut mis à jour vers "$newStatus".')));
       }
       return;
     }
-
     // Si oui, permettre la sélection de plusieurs images
     final List<XFile> images = await _picker.pickMultiImage();
     if (images.isEmpty) {
       // L'utilisateur a choisi d'uploader mais a annulé la sélection
-      await _updateReturnStatus(newStatus);
+      await _firestore.collection('ops_ligne_transport').doc(_operationDocId).set(
+        {statusFieldName: newStatus},
+        SetOptions(merge: true),
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Statut mis à jour vers "$newStatus". Aucun justificatif ajouté.')),
@@ -331,7 +221,7 @@ class _HomeScreenState extends State<HomeScreen> {
       for (var i = 0; i < images.length; i++) {
         final image = images[i];
         final timestamp = DateTime.now().millisecondsSinceEpoch;
-        final ref = _storage.ref('justificatif/$_operationDocId/${firestoreFieldName}_${timestamp}_$i.jpg');
+        final ref = _storage.ref('justificatif/$_operationDocId/${proofFieldName}_${timestamp}_$i.jpg');
         await _uploadFileToStorage(ref, image);
         final imageUrl = await ref.getDownloadURL();
         imageUrls.add(imageUrl);
@@ -342,8 +232,8 @@ class _HomeScreenState extends State<HomeScreen> {
       // Utiliser FieldValue.arrayUnion pour ajouter les URLs à un tableau dans Firestore
       await operationRef.set(
         {
-          firestoreFieldName: FieldValue.arrayUnion(imageUrls),
-          'statut_retour': newStatus,
+          proofFieldName: FieldValue.arrayUnion(imageUrls),
+          statusFieldName: newStatus,
         },
         SetOptions(merge: true),
       );
@@ -625,12 +515,20 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _sendGeolocation(Position position) async {
-    if (_tracteur == null || _idLigneTransport == null) return;
+    if (_tracteur == null || _idLigneTransport == null || _refLigneTransport == null) return;
+
+    // Vérifier si les coordonnées sont en Afrique avant de les envoyer.
+    if (!_isWithinAfrica(position.latitude, position.longitude)) {
+      // Optionnel : logger que les coordonnées ont été ignorées.
+      debugPrint('Coordonnées hors d\'Afrique ignorées: Lat ${position.latitude}, Lon ${position.longitude}');
+      return; // Ne pas envoyer les données.
+    }
 
     try {
       await _firestore.collection('ops_ligne_gps').add({
         'Tracteur': _tracteur,
         'id-ligne-transport': _idLigneTransport,
+        'Ref_Ligne_Transport': _refLigneTransport,
         'position': GeoPoint(position.latitude, position.longitude),
         'timestamp': Timestamp.now(),
       });
@@ -639,6 +537,19 @@ class _HomeScreenState extends State<HomeScreen> {
       // sans interrompre l'utilisateur.
       debugPrint("Erreur lors de l'envoi de la géolocalisation: $e");
     }
+  }
+
+  /// Vérifie si une coordonnée GPS se trouve dans le cadre géographique de l'Afrique.
+  bool _isWithinAfrica(double latitude, double longitude) {
+    // Cadre géographique (Bounding Box) approximatif pour l'Afrique,
+    // incluant les îles environnantes pour plus de flexibilité.
+    const double minLat = -40.0; // Sud (au-delà de l'Afrique du Sud)
+    const double maxLat = 40.0;  // Nord (au-delà de la Tunisie)
+    const double minLon = -26.0; // Ouest (inclut le Cap-Vert)
+    const double maxLon = 64.0;  // Est (inclut Maurice)
+
+    return latitude >= minLat && latitude <= maxLat &&
+           longitude >= minLon && longitude <= maxLon;
   }
 
   @override
@@ -965,12 +876,24 @@ class _HomeScreenState extends State<HomeScreen> {
         VoidCallback? onPressedAction;
 
         if (isEnabled) {
-          if (statusInfo.label == 'Chargé') {
-            onPressedAction = () => _pickAndUploadJustificatif('Upload_Chargement', 'Chargé');
+          // Demande un justificatif au passage à "En route"
+          if (statusInfo.label == 'En route') {
+            onPressedAction = () => _updateStatusWithOptionalProof(
+                  newStatus: 'En route', // Le nouveau statut
+                  proofFieldName: 'Upload_Chargement', // Le champ pour les justificatifs de chargement
+                  statusFieldName: 'statut_driver',
+                );
           } else if (statusInfo.label == 'Déchargement terminé') {
-            onPressedAction = () => _pickAndUploadJustificatif('Upload_Dechargement', 'Déchargement terminé');
+            onPressedAction = () => _updateStatusWithOptionalProof(
+                  newStatus: 'Déchargement terminé',
+                  proofFieldName: 'Upload_Dechargement',
+                  statusFieldName: 'statut_driver',
+                );
           } else {
-            onPressedAction = () => _updateDriverStatus(statusInfo.label);
+            onPressedAction = () => _firestore.collection('ops_ligne_transport').doc(_operationDocId).set(
+                  {'statut_driver': statusInfo.label},
+                  SetOptions(merge: true),
+                );
           }
         }
 
@@ -1026,20 +949,6 @@ class _HomeScreenState extends State<HomeScreen> {
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color.fromARGB(255, 169, 5, 5),
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(vertical: 16),
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: OutlinedButton.icon(
-            onPressed: null,
-            icon: const Icon(Icons.info_outline),
-            label: const Text('Détails'),
-            style: OutlinedButton.styleFrom(
-              side: const BorderSide(color: Colors.grey),
-              disabledForegroundColor: Colors.grey,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
@@ -1106,14 +1015,11 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Stack(
               children: [
                 Container(color: Colors.grey.shade300),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 400),
-                    curve: Curves.easeInOut,
-                    width: constraints.maxWidth * progress,
-                    color: Colors.deepPurple,
-                  ),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 400),
+                  curve: Curves.easeInOut,
+                  width: constraints.maxWidth * progress,
+                  color: Colors.deepPurple,
                 ),
               ],
             ),
@@ -1139,7 +1045,11 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8.0),
             child: ElevatedButton(
-              onPressed: isRetourEnabled ? () => _updateReturnStatus(retourStatus.label) : null,
+              onPressed: isRetourEnabled
+                  ? () => _firestore.collection('ops_ligne_transport').doc(_operationDocId).set(
+                        {'statut_retour': retourStatus.label},
+                        SetOptions(merge: true))
+                  : null,
               style: ElevatedButton.styleFrom(
                 backgroundColor: retourStatus.color,
                 disabledBackgroundColor: retourStatus.color.withOpacity(0.5),
@@ -1161,7 +1071,12 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8.0),
             child: ElevatedButton(
-              onPressed: isArriveEnabled ? () => _pickAndUploadRestitution('Upload_Restitution', arriveStatus.label) : null,
+              onPressed: isArriveEnabled
+                  ? () => _updateStatusWithOptionalProof(
+                      newStatus: arriveStatus.label,
+                      proofFieldName: 'Upload_Restitution',
+                      statusFieldName: 'statut_retour')
+                  : null,
               style: ElevatedButton.styleFrom(
                 backgroundColor: arriveStatus.color,
                 disabledBackgroundColor: arriveStatus.color.withOpacity(0.5),

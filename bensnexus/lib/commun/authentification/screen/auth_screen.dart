@@ -1,5 +1,5 @@
 import 'package:bensnexus/commun/authentification/otp_screen.dart'; // Assurez-vous que ce chemin est correct
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:bensnexus/commun/services/user_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -22,6 +22,7 @@ class _AuthScreenState extends State<AuthScreen> {
   final _passwordController = TextEditingController(); // Pour le mot de passe (email)
   final _otpController = TextEditingController(); // Pour le code OTP
 
+  final UserService _userService = UserService();
   // Logique de Firebase et état de l'UI
   final FirebaseAuth _auth = FirebaseAuth.instance;
   bool _isLoading = false;
@@ -120,7 +121,9 @@ class _AuthScreenState extends State<AuthScreen> {
           _isOtpSent = true; // Affiche le champ OTP
         });
       } on FirebaseAuthException catch (e) {
-        _handleError("Erreur reCAPTCHA : ${e.message}");
+        _handleError("Erreur d'envoi du code : ${e.message ?? e.code}");
+      } catch (e) {
+        _handleError("Une erreur inattendue est survenue lors de l'envoi du code.");
       }
     } else {
       // Logique existante pour mobile
@@ -196,29 +199,42 @@ class _AuthScreenState extends State<AuthScreen> {
     } on FirebaseAuthException catch (e) {
       _handleError(e.code == 'invalid-verification-code'
           ? "Le code OTP est incorrect. Veuillez réessayer."
-          : "Une erreur est survenue: ${e.message}");
+          : "Une erreur est survenue: ${e.message ?? e.code}");
+    } catch (e) {
+      _handleError("Une erreur inattendue est survenue lors de la vérification.");
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
   /// Gère les erreurs de `verifyPhoneNumber`
   void _handleErrorFromException(FirebaseAuthException e) {
-        String errorMessage;
-        switch (e.code) {
-          case 'invalid-phone-number':
-            errorMessage =
-                "Le numéro de téléphone n'est pas valide. Veuillez inclure l'indicatif (ex: +221).";
-            break;
-          case 'quota-exceeded':
-            errorMessage = "Quota de SMS dépassé. Réessayez plus tard.";
-            break;
-          case 'too-many-requests':
-            errorMessage = "Trop de tentatives ont été effectuées depuis cet appareil. Veuillez réessayer plus tard.";
-            break;
-          default:
-            // Le message que vous vouliez enlever a été remplacé par un message plus clair.
-            errorMessage = "Impossible de vérifier ce numéro. Veuillez réessayer ou contacter le support.";
-        }
-        _handleError(errorMessage);
+    String errorMessage;
+    switch (e.code) {
+      case 'invalid-phone-number':
+        errorMessage =
+            "Le numéro de téléphone n'est pas valide. Veuillez inclure l'indicatif (ex: +221).";
+        break;
+      case 'quota-exceeded':
+        errorMessage = "Quota de SMS dépassé. Réessayez plus tard.";
+        break;
+      case 'too-many-requests':
+        errorMessage =
+            "Trop de tentatives ont été effectuées depuis cet appareil. Veuillez réessayer plus tard.";
+        break;
+      case 'network-request-failed':
+        errorMessage = "Erreur de réseau. Vérifiez votre connexion internet et réessayez.";
+        break;
+      case 'operation-not-allowed':
+        errorMessage =
+            "L'authentification par téléphone n'est pas activée pour cette application. Veuillez contacter le support.";
+        break;
+      default:
+        errorMessage = "Impossible de vérifier ce numéro (Code: ${e.code}). Veuillez réessayer ou contacter le support.";
+    }
+    _handleError(errorMessage);
   }
 
   /// Gère la logique après une authentification réussie (auto ou manuelle).
@@ -231,36 +247,21 @@ class _AuthScreenState extends State<AuthScreen> {
     }
 
     try {
-      String? userEmail = user.email;
-      bool isAdmin = false;
+      final String role = await _userService.getUserRole(user);
 
-      // Un utilisateur admin doit avoir un email pour être vérifié dans la collection.
-      if (userEmail != null && userEmail.isNotEmpty) {
-        final adminDoc = await FirebaseFirestore.instance
-            .collection('Compte_Admin')
-            .where('email', isEqualTo: userEmail)
-            .limit(1)
-            .get();
-
-        if (adminDoc.docs.isNotEmpty) {
-          isAdmin = true;
-        } else if (_isEmailMode) {
-          // Si l'utilisateur tente de se connecter par email mais n'est pas un admin,
-          // on le déconnecte et on affiche une erreur.
-          await _auth.signOut();
-          _handleError("Accès refusé. Seuls les administrateurs peuvent se connecter par email.");
-          return;
-        }
-      } else if (_isEmailMode) {
-        // Sécurité : si on est en mode email mais que l'utilisateur n'a pas d'email (ne devrait pas arriver)
+      // Si l'utilisateur tente de se connecter par email mais n'est pas un admin,
+      // on le déconnecte et on affiche une erreur.
+      if (role == 'driver' && _isEmailMode) {
         await _auth.signOut();
-        _handleError("La connexion par email requiert une adresse email valide.");
+        _handleError("Accès refusé. Seuls les administrateurs peuvent se connecter par email.");
         return;
       }
 
       if (mounted) {
         Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (context) => isAdmin ? const HomeScreenAdmin() : const HomeScreen()),
+          MaterialPageRoute(
+            builder: (context) => role == 'admin' ? const HomeScreenAdmin() : const HomeScreen(),
+          ),
           (Route<dynamic> route) => false,
         );
       }

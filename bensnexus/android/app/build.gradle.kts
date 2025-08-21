@@ -28,7 +28,8 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         // La plupart des SDK Firebase nécessitent une version minimale de 21.
-        minSdk = 23
+        // Le plugin geolocator (>= 11.0.0) requiert une version minimale de 24.
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -60,4 +61,5 @@ dependencies {
     implementation("com.google.firebase:firebase-analytics")
     implementation("com.google.firebase:firebase-auth")
     // Ajoutez ici d'autres dépendances Firebase (ex: "com.google.firebase:firebase-firestore")
+    
 }

@@ -1,8 +1,8 @@
 import 'package:bensnexus/commun/authentification/screen/onboarding_screen.dart';
 import 'package:bensnexus/commun/authentification/screen/auth_screen.dart';
+import 'package:bensnexus/commun/services/user_service.dart';
 import 'package:bensnexus/home_screen.dart';
 import 'package:bensnexus/home_screen_admin.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -98,58 +98,12 @@ class RoleDispatcher extends StatefulWidget {
 }
 
 class _RoleDispatcherState extends State<RoleDispatcher> {
-  /// Vérifie dans Firestore si l'utilisateur est un admin ou un driver.
-  Future<String> _checkUserRole() async {
-    final user = widget.user;
-    final phoneNumber = user.phoneNumber;
-    final email = user.email;
-
-    // Si l'utilisateur n'a ni numéro de téléphone ni email, on ne peut pas vérifier son rôle.
-    if ((phoneNumber == null || phoneNumber.isEmpty) && (email == null || email.isEmpty)) {
-      await FirebaseAuth.instance.signOut();
-      return 'logout';
-    }
-
-    final adminCollection = FirebaseFirestore.instance.collection('ops_admin');
-
-    // 1. Vérifier si l'utilisateur est un administrateur par numéro de téléphone.
-    // On vérifie le format international (ex: +221...) et un format local potentiel (les 9 derniers chiffres).
-    if (phoneNumber != null && phoneNumber.isNotEmpty) {
-      final List<String> phoneFormats = [phoneNumber];
-      // Ajoute le format sans le code pays si le numéro est assez long.
-      if (phoneNumber.length > 9) {
-        phoneFormats.add(phoneNumber.substring(phoneNumber.length - 9));
-      }
-
-      final adminQuery = await adminCollection
-          .where('numero', whereIn: phoneFormats)
-          .limit(1)
-          .get();
-
-      if (adminQuery.docs.isNotEmpty) {
-        return 'admin';
-      }
-    }
-
-    // 2. Si non trouvé par numéro, vérifier par email (si disponible).
-    // Cela suppose que les documents admin peuvent avoir un champ 'email'.
-    if (email != null && email.isNotEmpty) {
-      final adminQuery =
-          await adminCollection.where('email', isEqualTo: email).limit(1).get();
-      if (adminQuery.docs.isNotEmpty) {
-        return 'admin';
-      }
-    }
-
-    // 3. Si ce n'est pas un admin, on considère que c'est un driver.
-    // La logique de HomeScreen gère déjà le cas où un driver n'a pas d'opération active.
-    return 'driver';
-  }
+  final UserService _userService = UserService();
 
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<String>(
-      future: _checkUserRole(),
+      future: _userService.getUserRole(widget.user),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return Scaffold(body: Center(child: LoadingAnimationWidget.threeArchedCircle(color: Theme.of(context).primaryColor, size: 50)));

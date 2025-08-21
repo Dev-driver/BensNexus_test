@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:bensnexus/map_screen.dart';
 import 'package:bensnexus/commun/authentification/screen/auth_screen.dart';
 import 'package:flutter/material.dart';
 
@@ -153,7 +154,7 @@ class _HomeScreenAdminState extends State<HomeScreenAdmin> {
     final String driverName = data['Driver'] ?? 'Chauffeur';
     final String? profileImageUrl = data['image_driver'] as String?;
     final String driverTractorCode = data['Tracteur'] ?? 'N/A';
-    final String idLigne = data['ID_Ligne_Transport'] ?? 'non défini';
+    final String? idLigne = data['ID_Ligne_Transport'] as String?;
     final String lieuChargement = data['Lieu_Chargement'] ?? '?';
     final String lieuDechargement = data['Lieu_Dechargement'] ?? '?';
     final String description = data['description'] ?? 'Pas de description.';
@@ -218,7 +219,7 @@ class _HomeScreenAdminState extends State<HomeScreenAdmin> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  idLigne,
+                  idLigne ?? 'ID non défini',
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     color: Colors.black87,
@@ -248,24 +249,43 @@ class _HomeScreenAdminState extends State<HomeScreenAdmin> {
                   const SizedBox(height: 8),
                   _buildReturnStatusInfo(statutRetour),
                 ],
-                if (showArchiveButton) ...[
-                  const SizedBox(height: 20),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: ElevatedButton.icon(
-                      onPressed: canArchive ? () => _archiveOperation(docId) : null,
-                      icon: const Icon(Icons.inventory_2),
-                      label: const Text('Archiver'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.purple,
-                        foregroundColor: Colors.white,
-                        disabledBackgroundColor: Colors.purple.withOpacity(0.4),
-                        disabledForegroundColor: Colors.white70,
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: idLigne != null
+                          ? () {
+                              Navigator.of(context).push(MaterialPageRoute(
+                                builder: (context) => MapScreen(idLigneTransport: idLigne),
+                              ));
+                            }
+                          : null,
+                      icon: const Icon(Icons.map_outlined),
+                      label: const Text('Voir Trajet'),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Color.fromARGB(255, 169, 5, 5)),
+                        foregroundColor: const Color.fromARGB(255, 169, 5, 5),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                     ),
-                  ),
-                ]
+                    if (showArchiveButton) ...[
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        onPressed: canArchive ? () => _archiveOperation(docId) : null,
+                        icon: const Icon(Icons.inventory_2),
+                        label: const Text('Archiver'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.purple,
+                          foregroundColor: Colors.white,
+                          disabledBackgroundColor: Colors.purple.withOpacity(0.4),
+                          disabledForegroundColor: Colors.white70,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ],
             ),
           ),

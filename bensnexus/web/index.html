@@ -21,7 +21,7 @@
   <meta name="description" content="A new Flutter project.">
 
   <!-- iOS meta tags & icons -->
-  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="bensnexus">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
@@ -33,6 +33,33 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <!-- Conteneur pour reCAPTCHA, nécessaire pour l'authentification par téléphone sur le web -->
+  <div id="recaptcha-container"></div>
+
+  <!-- SDK Firebase -->
+  <!-- Utilisation des SDK de compatibilité pour une transition plus simple depuis les anciennes versions -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-storage-compat.js"></script>
+
+  <script>
+    // Votre configuration Firebase pour le web. Remplacez par vos propres clés.
+    const firebaseConfig = {
+      apiKey: "VOTRE_API_KEY",
+      authDomain: "VOTRE_AUTH_DOMAIN",
+      projectId: "VOTRE_PROJECT_ID",
+      storageBucket: "VOTRE_STORAGE_BUCKET",
+      messagingSenderId: "VOTRE_MESSAGING_SENDER_ID",
+      appId: "VOTRE_APP_ID"
+    };
+    // Initialisation de Firebase
+    firebase.initializeApp(firebaseConfig);
+  </script>
+
+  <!-- API Google Maps pour le web. Remplacez par votre propre clé. -->
+  <script src="https://maps.googleapis.com/maps/api/js?key=VOTRE_CLE_API_GOOGLE_MAPS"></script>
+
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

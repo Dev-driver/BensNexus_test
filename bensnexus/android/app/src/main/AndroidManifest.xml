@@ -2,6 +2,11 @@
     <!-- Permissions pour la géolocalisation -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Requis pour les services de premier plan de type "location" sur Android 14+ -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Permissions pour l'image picker sur les anciennes versions d'Android -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
@@ -38,6 +43,15 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- Déclaration du service pour flutter_background_service -->
+        <service
+            android:name="id.flutter.flutter_background_service.BackgroundService"
+            android:foregroundServiceType="location" />
+            
+         <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyAOHwLkUpKXLXoEGeUW2yTgMEW5e14CtHI" />   
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

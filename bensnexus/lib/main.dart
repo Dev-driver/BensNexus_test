@@ -2,6 +2,7 @@ import 'package:bensnexus/commun/authentification/auth_gate.dart';
 import 'package:bensnexus/commun/authentification/screen/auth_screen.dart';
 import 'package:bensnexus/commun/authentification/screen/onboarding_screen.dart';
 import 'package:bensnexus/home_screen.dart';
+import 'package:bensnexus/home_screen_admin.dart';
 import 'package:flutter/material.dart';
 
 // Importations Firebase
@@ -33,6 +34,7 @@ class MyApp extends StatelessWidget {
             routes: {
               '/onboarding': (context) => const OnboardingScreen(),
               '/auth': (context) => const AuthScreen(),
+              '/admin': (context) => const HomeScreenAdmin(),
               '/driver': (context) => const HomeScreen(), // Admin et Driver sont gérés par AuthGate
               // '/client': (context) => const OrdersScreen(), // Route client, si nécessaire
             },
